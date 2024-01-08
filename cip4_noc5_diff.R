@@ -24,17 +24,21 @@ add_weights <- function(tbbl){
   tbbl|>
     mutate(weight=count/sum(count), #using all the counts as weights
            weight1=if_else(weight>=.01, weight, 0), #replacing all weights less than .01 with 0
-           weight1=weight1/sum(weight1), #weights, conditional on being greater than .01 (conditional weights sum to 1)
-    )
+           weight1=weight1/sum(weight1), .after="count" #weights, conditional on being greater than .01 (conditional weights sum to 1)
+    )|>
+    arrange(desc(weight1))
 }
+
 get_weighted_mean <- function(tbbl){
   #' Input: a tibble with columns noc, count, weight and weight1
   #' Output: a long format tibble with columns thing and level
+  #browser()
   inner_join(tbbl, onet_long)|> #joins the weights to the skills data
     group_by(thing)|> #group by the skill/work activity
     mutate(weighted1=Level*weight1)|> #multiply skill/work activity Level times the weights
     summarize(Level=round(sum(weighted1),2)) #add up all the weighted values
 }
+
 get_difference <- function(noc, cip){
   #' Inputs: one row tibbles with all the skills/work activities as columns
   #' Output: a tibble with columns thing (i.e. skills/work activities) and difference
@@ -166,24 +170,24 @@ unnested <- all_the_data|>
   select(-noc_data, -cip_data)|>
   unnest(level_diff)|>
   pivot_wider(names_from = thing, values_from = difference, names_prefix = "noc-cip ")
+
 openxlsx::write.xlsx(unnested, here("out", "cip_noc_differences.xlsx"))
 openxlsx::write.xlsx(cip_onet, here("out", "cip_onet.xlsx"))
 
 #exploration-------------
-major_groups <- c("Legislative and senior management occupations",
-                  "Business, finance and administration occupations",
-                  "Natural and applied sciences and related occupations",
-                  "Health occupations",
-                  "Occupations in education, law and social, community and government services",
-                  "Occupations in art, culture, recreation and sport",
-                  "Sales and service occupations",
-                  "Trades, transport and equipment operators and related occupations",
-                  "Natural resources, agriculture and related production occupations",
-                  "Occupations in manufacturing and utilities")
+major_groups <- c("Legislative and senior management",
+                  "Business, finance and administration",
+                  "Natural and applied sciences",
+                  "Health",
+                  "Education, law and social, community and government services",
+                  "Art, culture, recreation and sport",
+                  "Sales and service",
+                  "Trades, transport and equipment operators",
+                  "Natural resources, agriculture",
+                  "Manufacturing and utilities")
 noc1 <- as.character(0:9)
 
 noc_names <- tibble(major_groups=major_groups, noc1=noc1)
-
 
 with_noc_groups <- unnested|>
   mutate(noc1=str_sub(NOC, 1, 1),

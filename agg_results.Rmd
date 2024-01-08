@@ -1,0 +1,344 @@
+---
+title: "The impact of Skill mis-match labour market outcomes"
+subtitle: "Source code: [![github logo](github.png){width=100px}](https://github.com/bcgov/skill_value){target='_blank'}"
+author: "Richard Martin"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message=FALSE)
+set.seed(123)
+library(tidyverse)
+library(conflicted)
+conflicts_prefer(dplyr::filter)
+library(here)
+library(lmtest)
+library(sandwich)
+library(tidytext)
+library(broom)
+my_dt <- function(tbbl) {
+  DT::datatable(tbbl,
+    extensions = "Buttons",
+    rownames = FALSE,
+    options = list(
+      columnDefs = list(list(className = "dt-center", targets = "_all")),
+      paging = TRUE,
+      scrollX = TRUE,
+      scrollY = TRUE,
+      searching = TRUE,
+      ordering = TRUE,
+      dom = "Btip",
+      buttons = list(
+        list(extend = "csv", filename = "some_file_name"),
+        list(extend = "excel", filename = "some_file_name")
+      ),
+      pageLength = 20,
+      lengthMenu = c(3, 5)
+    )
+  )
+}
+```
+
+```{r}
+#for the heatmap------------------
+distance2 <- read_csv(here("out","distance2.csv"))
+dist_mat <- distance2|>
+  mutate(NOC=str_sub(NOC, start=6),
+         CIP=str_sub(CIP, start=6)
+         )|>
+  separate(NOC, into=c("NOC","NOC_number"), sep=": ")|>
+  separate(CIP, into=c("CIP","CIP_number"), sep=": ")|>
+  select(-NOC_number,-CIP_number)|>
+  mutate(CIP=str_trunc(CIP, 50),
+         NOC=str_trunc(NOC, 50))|>
+  pivot_wider(names_from = CIP, values_from = distance)|>
+  column_to_rownames("NOC")|>
+  as.matrix()
+
+#for proportion table-------------------
+cip2_noc5 <- vroom::vroom(here("raw_data","stats_can","cip2_noc5.csv"), skip = 15, n_max = 512, col_names = FALSE)
+colnames(cip2_noc5) <- vroom::vroom(here("raw_data","stats_can","cip2_noc5.csv"), skip = 10, n_max = 1, col_names = FALSE)
+colnames(cip2_noc5)[1] <- "noc"
+cip2_noc5 <- cip2_noc5|>
+  mutate(noc=str_sub(noc, end=5))|>
+  select(noc, `Health and related fields`)|>
+  arrange(desc(`Health and related fields`))|>
+  mutate(Proportion=`Health and related fields`/sum(`Health and related fields`),
+         `Truncated Proportion`=if_else(Proportion>.01, Proportion, 0),
+         `Adjusted Proportion`=`Truncated Proportion`/sum(`Truncated Proportion`)
+         )|>
+  slice_head(n=20)|>
+  mutate(across(`Proportion`:`Adjusted Proportion`, ~ round(.x, 4)))
+#for the income regression-------------------------
+filtered <- read_rds(here("out","filtered.rds"))
+filtering_info <- read_rds(here("out","filtering_info.rds"))
+#for the logistic regression--------------------------
+filtered2 <- read_rds(here("out","filtered2.rds"))
+filtering_info2 <- read_rds(here("out","filtering_info2.rds"))
+
+#for text---------------------
+num_occupations <- length(unique(filtered$`NOC vs. Admin and financ...:`))
+num_cip <- length(unique(filtered$`CIP vs. Agriculture...:`))
+#split the data
+train_and_test <- filtered|>
+  mutate(set=sample(c("train", "test"), size=nrow(filtered), replace = TRUE, prob = c(.9, .1)))
+train <- train_and_test|>
+  filter(set=="train")|>
+  select(-set)
+test <- train_and_test|>
+  filter(set=="test")|>
+  select(-set)
+
+train_and_test2 <- filtered2|>
+  mutate(set=sample(c("train", "test"), size=nrow(filtered2), replace = TRUE, prob = c(.9, .1)))
+train2 <- train_and_test2|>
+  filter(set=="train")|>
+  select(-set)
+
+null_prob <- table(train2$full_time_full_year)[2]/nrow(train2)
+test2 <- train_and_test2|>
+  filter(set=="test")|>
+  select(-set)
+
+#the income model----------------
+mod1 <- lm(log_income ~ . , data = train)
+#the logit model-------------------------------
+mod2 <- glm(full_time_full_year ~ . , family=binomial(link='logit'), data=train2)
+
+
+#assess accuracy-----------------
+rmse_in_sample <- sqrt(mean(mod1$residuals^2))
+test_w_pred <- test|>
+  mutate(prediction= predict(mod1, newdata = test))
+rmse_out_of_sample <- test_w_pred|>
+  mutate(error_squared=(log_income-prediction)^2)|>
+  summarize(mean_squared_error=mean(error_squared))|>
+  pull()|>
+  sqrt()
+
+rmse_in_sample2 <- sqrt(mean(mod2$residuals^2))
+
+test_w_pred2 <- test2|>
+  mutate(prediction= predict(mod2, newdata = test2),
+         prediction=  round(exp(prediction)/(1+exp(prediction))), #inverse logit, then round to 0 or 1
+         null_prediction = sample(c(0,1), size=nrow(test2), replace=TRUE, prob=c(1-null_prob, null_prob))
+         )
+
+confusion <- with(test_w_pred2, table(full_time_full_year, prediction))
+prediction_accuracy <- (confusion[1,1]+confusion[2,2])/sum(confusion)
+
+null_confusion <- with(test_w_pred2, table(full_time_full_year, null_prediction))
+null_prediction_accuracy <- (null_confusion[1,1]+null_confusion[2,2])/sum(null_confusion)
+
+test_logit <- glance(with(test_w_pred2, chisq.test(full_time_full_year, prediction)))
+null_test_logit <- glance(with(test_w_pred2, chisq.test(full_time_full_year, null_prediction)))
+
+# Adjust standard errors for stargazer
+cov1         <- vcovHC(mod1, type = "HC1")
+robust_se1    <- sqrt(diag(cov1))
+cov2        <- vcovHC(mod2, type = "HC1")
+robust_se2    <- sqrt(diag(cov2))
+
+# Robust standard errors for plot ---------------
+mod1rse <- coeftest(mod1, cov1)
+mod1_coef <- broom::tidy(mod1rse, conf.int = TRUE)|>
+  separate(term, into=c("variable","level"),sep=":`")|>
+  mutate(variable=str_remove_all(variable, "`"),
+         level= if_else(is.na(level), variable, level),
+         level=str_trunc(level, 50)
+         )|>
+  filter(!variable %in% c("(Intercept)",
+                          "Language vs. not english",
+                          "Gender vs. Woman+"
+                          ))|>
+  arrange(variable, level)|>
+  mutate(estimate=exp(estimate)-1,
+         conf.low=exp(conf.low)-1,
+         conf.high=exp(conf.high)-1
+         )
+
+mod2rse <- coeftest(mod2, cov2)
+mod2_coef <- broom::tidy(mod2rse, conf.int = TRUE)|>
+  separate(term, into=c("variable","level"),sep=":`")|>
+  mutate(variable=str_remove_all(variable, "`"),
+         level= if_else(is.na(level), variable, level),
+         level=str_trunc(level, 50)
+         )|>
+  filter(!variable %in% c("(Intercept)",
+                          "Language vs. not english",
+                          "Gender vs. Woman+"
+                          ))|>
+  arrange(variable, level)|>
+  mutate(estimate=exp(estimate)-1,
+         conf.low=exp(conf.low)-1,
+         conf.high=exp(conf.high)-1
+         )
+
+#for text--------------------------
+distance_effect <- mod1_coef$estimate[mod1_coef$variable=="distance"]
+dist_quant <- quantile(filtered$distance, probs = c(.1,.9), na.rm = TRUE)
+economic_effect <- (dist_quant[2]-dist_quant[1])*distance_effect
+distance_effect2 <- mod2_coef$estimate[mod2_coef$variable=="distance"]
+dist_quant2 <- quantile(filtered2$distance, probs = c(.1,.9), na.rm = TRUE)
+economic_effect2 <- (dist_quant2[2]-dist_quant2[1])*distance_effect2
+
+```
+
+## Introduction:
+
+
+The goal of this exercise is to investigate the impact of skill mismatch on 
+
+1) employment income of those who work full time full year and
+2) the odds of working full time full year.
+
+We define skill mismatch to be the euclidean distance between the skill profile of an occupation and the skills possessed by a worker.  The skill profile of an occupation is relatively straight forward to derive from the ONET skills and work activities.  In contrast there is no source of information regarding the skills of a worker.  Here we make the presumption that a worker's skills are acquired during education, and we can infer the skills acquired during education by looking at the relationship between occupations and field of study.
+
+Statistics Canada Table: 98-10-0403-01 contains counts of workers by occupation and field of study. Suppose that we wanted to infer the average skill profile of someone whose field of study was `Health and related fields`. In the table below we show the top occupations (by count of workers) for the field of study `Health and related fields`.  From this we derive a  proportion, a truncated proportion (only proportions greater than .01), and an adjusted proportion to ensure the proportions we utilize sum to one.  We then multiply the skill profile of each of the occupations by the adjusted proportion and then sum to create a weighted average skill profile for each field of study. 
+
+```{r}
+my_dt(cip2_noc5)
+```
+
+We undertake a similar exercise to create a weighted average skill profile of the `r num_occupations` aggregate occupations based on the 5 digit NOC skill profiles and weights based on the counts of workers.  
+
+Once we have the skill profiles associated with each of the fields of study and occupation we can measure the distance between. To begin with we scale the skills and work activities to have a mean of zero and a standard deviation of one.  Next we perform principal component analysis, and retain only the first five principal components.  Finally we compute the euclidean distance between each of the occupations and fields of study based on the first five principal components.  The distances are ploted below, where colour indicates distance.  The most striking pattern is that for "Assisting occupations" the distance is large across all fields of study i.e. the yellow stripe in the bottom row.  
+
+```{r, fig.width=10, fig.height=8}
+ heatmaply::heatmaply(dist_mat)
+```
+
+## Filtering the census data:
+
+The census public use micro data file contains a sample of roughly 1 million Canadians.  We perform the following filtering of the data prior to analysis of the impact of skill mis-match of the employment income of those who work full year full time.
+
+```{r}
+colnames(filtering_info) <- c("Filter applied","Observations left")
+my_dt(filtering_info)
+```
+
+Note that the proportion of Canadians working full year full time is likely lower than normal, given COVID. This filtering leaves us with `r nrow(filtered)` observations, 90% of which are randomly allocated to a training set, with the remaining 10% going to a testing set. 
+
+## The model:
+
+So what we are after is the causal impact of a mismatch in skills (proxied by distance) on employment income.  Given that we are using observational data, we must lean on the Conditional Independence Assumption: i.e. we must assume that distance is "as good as randomly assigned" when we condition on the *all* the variables that influence both distance and employment income.  We fit the model 
+
+$$\log(Employment~Income)=Age+Highest~Degree+ Language+ Gender+ Ethnicity+Occupation+Field~of~Study+distance+\mu$$
+The plot below shows (most of the) regression results: Language and Gender estimates can be found in the regression table in the appendix.  From the results you can see that:
+
+1) Employment income increases rapidly with age and then levels off.
+2) Techy fields of study have higher levels of employment income, whereas humanities and education are low.
+3) Employment income increases significantly with highest degree attained.
+4) Employment income tends to be lower for non-whites.
+5) Employment income highest for health occupations, lowest in sales.
+
+But the main result we are after is the monetary penalty associated with a skill mismatch: $\beta_{distance}~=~$`r round(mod1_coef$estimate[mod1_coef$variable=="distance"],3)`, which can be interpreted as "A one unit increase in distance causes a $100*(\exp(\beta_{distance})-1)~=~$`r scales::percent(distance_effect, accuracy=.1)` change in employment income."  In terms of its economic relevance, going from the 10th percentile of distance `r dist_quant[1]` (relatively well matched) to the 90th percentile of distance `r dist_quant[2]` (relatively poorly matched) causes a `r scales::percent(economic_effect, accuracy=.1)` change in employment income, *ceteris paribus*. 
+
+## Plot of regression results:
+
+```{r, fig.retina=2, fig.width=12, fig.height=9}
+ggplot(mod1_coef, aes(estimate,
+                     reorder_within(level, within=variable, by=estimate),
+                     xmin=conf.low,
+                     xmax=conf.high))+
+  geom_vline(xintercept = 0, col="grey", lty=2)+
+  geom_point(size=.5)+
+  geom_errorbarh(height=0)+
+  facet_wrap(~variable, scales = "free")+
+  scale_y_reordered()+
+  scale_x_continuous(labels=scales::percent)+
+  labs(x=NULL,
+       y=NULL)+
+  theme_minimal()
+```
+
+## Out of sample fit:
+
+Note that the model only explains about `r scales::percent(glance(mod1)$r.squared)` of the variation in the *in sample* employment income, but even this might be overly optimistic. It is always a good idea to investigate the model's performance out of sample, to make sure that we have not over-fit the model.  Over fitting occurs when the model fits the in sample data well, but does not perform well out of sample. Below we look at how well the model performed out of sample (using the 10% of the sample that we held back).  The model does a fairly decent job of predicting employment income when it is low, but does not do a good job of explaining employment income in excess of \$200,000. Note that the root mean squared error in sample is `r round(rmse_in_sample,3)` whereas it is `r round(rmse_out_of_sample, 3)` out of sample: i.e. there is no evidence of over-fitting.
+
+
+```{r}
+ggplot(test_w_pred, aes(exp(prediction), exp(log_income)))+
+  geom_abline(slope = 1, intercept = 0, col="white", lwd=2)+
+  geom_point(alpha=.1)+
+  scale_x_continuous(labels=scales::dollar)+
+  scale_y_continuous(labels = scales::dollar)+
+  labs(x="Prediction",
+       y="Actual",
+       title="Test set prediction errors")
+```
+
+## Does skill mis-match influence whether someone works full time full year?
+
+In the analysis above we only considered those who were working full year full time in 2020: here we look at whether skills mis-match causes a difference in the odds of working full year full time.  We perform the following filtering of the data prior to analyzing the impact of skills mis-match on the odds of working full year full time.
+
+```{r}
+colnames(filtering_info2) <- c("Filter applied","Observations left")
+my_dt(filtering_info2)
+```
+
+
+## The model:
+
+So what we are after is the causal impact of a mismatch in skills (proxied by distance) on the odds of being employed full year full time.  Given that we are using observational data, we must lean on the Conditional Independence Assumption: i.e. we must assume that distance is "as good as randomly assigned" when we condition on the *all* the variables that influence both distance and whether employed full time full year.  We fit the model 
+
+$$logit(Employed~FT~FY)=Age+Highest~Degree+ Language+ Gender+ Ethnicity+Occupation+Field~of~Study+distance+\mu$$
+The plot below shows (most of the) regression results: Language and Gender estimates can be found in regression table which follows.  From the results you can see that the odds of working full year full time are:
+
+1) significantly higher for every age group when compared to 20-24 year olds.
+2) significantly higher for techy fields of study, and significantly lower for arts and humanities.
+3) significantly higher for the highest degree attained, with the exception of Medicine, dentistry..
+4) significantly higher for Filipino, and significantly lower for West Asian, Japanese and Korean.  
+5) significantly higher for professional occupations, and significantly lower for a broad range of occupations.  
+
+But the main result we are after is how distance affects the odds of being employed full time full year:  The odds of working full year full time decrease by `r scales::percent(distance_effect2, accuracy = .1)` for every one unit increase in distance.  In terms of its economic relevance, going from the 10th percentile of distance `r dist_quant2[1]` (relatively well matched) to the 90th percentile of distance `r dist_quant2[2]` (relatively poorly matched) causes a `r scales::percent(economic_effect2, accuracy=.1)` reduction in the odds of being fully employed, *ceteris paribus*.  
+
+## Plot of regression results:
+
+```{r, fig.retina=2, fig.width=12, fig.height=9}
+ggplot(mod2_coef, aes(estimate,
+                     reorder_within(level, within=variable, by=estimate),
+                     xmin=conf.low,
+                     xmax=conf.high))+
+  geom_vline(xintercept = 0, col="grey", lty=2)+
+  geom_point(size=.5)+
+  geom_errorbarh(height=0)+
+  facet_wrap(~variable, scales = "free")+
+  scale_y_reordered()+
+  scale_x_continuous(labels=scales::percent)+
+  labs(x=NULL,
+       y=NULL)+
+  theme_minimal()
+```
+
+## Assessing the Logit Model:
+
+We use the logit model to form predictions based on the test data. These predictions are converted to probabilities of being employed full time full year, and then rounded to either zero or one. We then can look at the out of sample prediction accuracy of the model via a confusion matrix:
+
+```{r comment=NA}
+confusion
+```
+
+From the confusion matrix we can see the model predicts full time full year employment with `r scales::percent(prediction_accuracy, accuracy=2)` accuracy. We can test the correspondence between the observed and predicted using the  `r test_logit$method`. i.e. What is the probability that we would get a correlation this strong between prediction and actual if the null hypothesis (no relationship) is true $$`r paste0("p = ",format(test_logit$p.value, scientific=FALSE))`$$ Lets compare this result to the null model, where we randomly assign either a zero or a one to each observation in the test set using the probabilities from the training set. 
+
+```{r comment=NA}
+null_confusion
+```
+
+The NULL model predicts full time full year employment with `r scales::percent(null_prediction_accuracy, accuracy=2)` accuracy. Again, we can use the `r null_test_logit$method` to assess the probability that we would get a result this extreme if the null hypothesis is true `r paste0("p = ",null_test_logit$p.value)`.
+
+## Appendix:
+
+```{r, results='asis'}
+stargazer::stargazer(mod1, mod2, type = "html",
+          se = list(robust_se1, robust_se2))
+```
+  
+
+
+
+
+
