@@ -77,7 +77,7 @@ filtered <- filtered|>
 
 filtering_info$`Occupation other than senior administrators and legislators` <- nrow(filtered)
 
-filtered <- filtered|>
+no_distance <- filtered|>
   remove_constant()|>
   mutate(`Age vs. 20-24:`=factor(AGEGRP, labels=c("20 to 24 years",
                                         "25 to 29 years",
@@ -122,7 +122,9 @@ filtered <- filtered|>
                                            "Indigenous peoples",
                                            "Unknown"
                                            )), .keep = "unused")|>
-  mutate(log_income=log(EmpIn), .after = EmpIn)|>
+  mutate(log_income=log(EmpIn), .after = EmpIn)
+
+filtered <- no_distance|>
   left_join(cip_noc_diff, by = c("NOC21"= "census_noc_code", "CIP2021"="census_cip_code"))|>
   rename(`NOC vs. Admin and financ...:`="census_noc_description",
          `CIP vs. Agriculture...:`="census_cip_description")|>
@@ -132,7 +134,7 @@ filtering_info <- enframe(filtering_info)
 
 write_rds(filtering_info, here("out","filtering_info.rds"))
 write_rds(filtered, here("out","filtered.rds"))
-
+write_rds(no_distance, here("out","no_distance.rds"))
 
 #create dataset for logit regression (work full year full time vs not)
 

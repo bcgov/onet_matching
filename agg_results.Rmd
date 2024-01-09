@@ -1,6 +1,6 @@
 ---
 title: "The impact of Skill mis-match labour market outcomes"
-subtitle: "Source code: [![github logo](github.png){width=100px}](https://github.com/bcgov/skill_value){target='_blank'}"
+subtitle: "Source code: [![github logo](github.png){width=100px}](https://github.com/bcgov/onet_matching){target='_blank'}"
 author: "Richard Martin"
 date: "`r Sys.Date()`"
 output:
@@ -43,6 +43,9 @@ my_dt <- function(tbbl) {
 ```
 
 ```{r}
+#simulation results----------------------
+simulation_results <- read_rds(here("out","simulation results.rds"))
+compare_swap <- read_rds(here("out","compare_swap.rds"))
 #for the heatmap------------------
 distance2 <- read_csv(here("out","distance2.csv"))
 dist_mat <- distance2|>
@@ -257,19 +260,143 @@ ggplot(mod1_coef, aes(estimate,
 
 ## Out of sample fit:
 
-Note that the model only explains about `r scales::percent(glance(mod1)$r.squared)` of the variation in the *in sample* employment income, but even this might be overly optimistic. It is always a good idea to investigate the model's performance out of sample, to make sure that we have not over-fit the model.  Over fitting occurs when the model fits the in sample data well, but does not perform well out of sample. Below we look at how well the model performed out of sample (using the 10% of the sample that we held back).  The model does a fairly decent job of predicting employment income when it is low, but does not do a good job of explaining employment income in excess of \$200,000. Note that the root mean squared error in sample is `r round(rmse_in_sample,3)` whereas it is `r round(rmse_out_of_sample, 3)` out of sample: i.e. there is no evidence of over-fitting.
+Note that the model only explains about `r scales::percent(glance(mod1)$r.squared)` of the variation in the *in sample* employment income, but even this might be overly optimistic. It is always a good idea to investigate the model's performance out of sample, to make sure that we have not over-fit the model.  Over fitting occurs when the model fits the in sample data well, but does not perform well out of sample. Below we look at how well the model performed out of sample (using the 10% of the sample that we held back).  The model does a fairly decent job of predicting employment income when it is low, but does not do a good job of explaining employment income in excess of \$300,000. Note that the root mean squared error in sample is `r round(rmse_in_sample,3)` whereas it is `r round(rmse_out_of_sample, 3)` out of sample: i.e. there is no evidence of over-fitting.
 
 
 ```{r}
 ggplot(test_w_pred, aes(exp(prediction), exp(log_income)))+
   geom_abline(slope = 1, intercept = 0, col="white", lwd=2)+
   geom_point(alpha=.1)+
-  scale_x_continuous(labels=scales::dollar)+
-  scale_y_continuous(labels = scales::dollar)+
+  scale_x_continuous(trans="log10", labels=scales::dollar)+
+  scale_y_continuous(trans="log10", labels = scales::dollar)+
   labs(x="Prediction",
        y="Actual",
        title="Test set prediction errors")
 ```
+
+## What if a social planner could reallocate workers between occupations?
+
+Here we address the question of whether we could improve matching by reallocating workers between occupations, with the goal of reducing skill mis-match: i.e. minimizing the average distance by iteratively swapping 2 workers between occupations.  We then compare the predicted employment income based on observed occupations (factual) with the predicted employment income based on the swapped occupations (counter factual).  
+
+[The simulation code &darr;]{style="float:right"}
+
+```{r, eval=FALSE}
+num_sim <- 100000 #social planner gives up after this many tries
+results <- tibble(sim = 1:num_sim, #initialize a dataframe to store simulation results
+                  nocs = vector(length = num_sim, mode = "list"), 
+                  mean_distance = NA_real_)
+
+for(i in 1:nrow(results)){
+  if(i==1){#in the first iteration
+    original <- test_stripped|> # test stripped contains only id, NOC and CIP
+      left_join(cip_noc_diff, 
+                by = c("NOC21"= "census_noc_code", "CIP2021"="census_cip_code"))|> #adds in the distances
+      mutate(prob=distance/sum(distance))#used below for drawing two observations to swap occupations
+    original_distance <- mean(original$distance) #baseline for comparison
+    changepoints <- sample(original$id, 
+                           size=2, 
+                           replace = FALSE, 
+                           prob = original$prob) #the two observations we are going to swap NOCs
+    new <- original|> #take the original allocation then
+      mutate(NOC21= replace(NOC21, 
+                            changepoints, 
+                            NOC21[rev(changepoints)]))|>#swap the NOCs of the two observations
+      select(-distance)|> #git rid of the old distance measure (it is wrong post-swap)
+      left_join(cip_noc_diff, 
+                by = c("NOC21"= "census_noc_code", 
+                       "CIP2021"="census_cip_code"))#adds the correct distances (given the swap)
+    new_distance <- mean(new$distance)#calculate the new mean distance
+    if(new_distance<original_distance){#if the swap reduced the mean distance
+      results$nocs[[i]] <- new$NOC21#new NOCs (starting point in the next iteration)
+      results$mean_distance[[i]] <- new_distance#save the new distance
+    }else{#if our swapping two NOCs did not reduce the mean distance
+      results$nocs[[i]] <- original$NOC21 #keep original NOCs (better than the swap)
+      results$mean_distance[[i]] <- original_distance #keep original distance (better than the swap)
+    }
+  }else{#for all subsequent iterations
+    original <- test_stripped|> 
+      select(-NOC21)|> #get rid of the original allocation of NOCs
+      bind_cols(NOC21=results$nocs[[i-1]])|> #add in the NOCs from the previous iteration
+      left_join(cip_noc_diff, 
+                by = c("NOC21"= "census_noc_code", 
+                       "CIP2021"="census_cip_code"))|>#add distances (using last iterations NOCs)
+      mutate(prob=distance/sum(distance)) #used below for drawing two observations to swap occupations
+    original_distance <- mean(original$distance) #baseline for comparison
+    changepoints <- sample(original$id, 
+                           size=2, 
+                           replace = FALSE, 
+                           prob = original$prob) #two observations where we will swap NOCs
+    new <- original|> #take  the original (for this iteration) data, then 
+      mutate(NOC21= replace(NOC21, 
+                            changepoints, 
+                            NOC21[rev(changepoints)]))|> #swap the NOCs for two of the observations
+      select(-distance)|> #distance is now wrong given the swap
+      left_join(cip_noc_diff, 
+                by = c("NOC21"= "census_noc_code", 
+                       "CIP2021"="census_cip_code"))#add in the correct distances
+    new_distance <- mean(new$distance)#calculate the mean distance (given the swap)
+    if(new_distance<original_distance){#if the swap reduced the mean distance
+      results$nocs[[i]] <- new$NOC21 #save the swapped NOCs for use in next iteration
+      results$mean_distance[[i]] <- new_distance #save the new average distance
+    }else{#if the swap did not reduce the mean distance 
+      results$nocs[[i]] <- original$NOC21 #save the unchanged NOCs for use in next iteration
+      results$mean_distance[[i]] <- original_distance #save the original distance
+    }
+  }
+  print(paste(scales::percent(i/num_sim, accuracy = 1), "complete")) #how much longer do I have to wait?
+}
+```
+
+```{r}
+ggplot(simulation_results, aes(sim, mean_distance))+
+  geom_line()+
+  scale_x_continuous(labels=scales::comma)+
+  labs(x="Simulation Number",
+       y="Average skill gap distance",
+       title="Shuffling occupations can reduce the average skill gap."
+       )
+```
+
+Next we can look at how the NOC swapping influences predicted wages in the test set, utilizing the model fit on the training set. First off, summary statistics:
+
+```{r}
+compare_swap|>
+  group_by(data)|>
+  summarise(mean_income=scales::dollar(mean(exp(predictions))),
+            sd_income=scales::dollar(sd(exp(predictions))))|>
+  DT::datatable(rownames = FALSE)
+```
+
+From the summary statistics we can infer that any risk neutral individual behind the veil of ignorance would prefer the distribution of employment income based on the swapped occupations: the mean is higher.  How about for risk averse individuals?  Next, lets take a look at density plots:
+
+```{r}
+ggplot(compare_swap, aes(exp(predictions), fill=data))+
+  geom_density(alpha=.25)+
+  scale_x_continuous(labels = scales::dollar)+
+  labs(x="Predicted Employment Income")
+```
+
+The reduction in dispersion is apparent, with the increase in level being more subtle.
+
+Looks like it is possible that the swapped distribution of predicted employment income second order stochastically dominates (SOSD) the original distribution of predicted employment income.  Why do we care about SOSD?  What it implies is that **any** risk averse or risk neutral person behind the veil of ignorance would prefer the distribution of employment income based on the swapped occupations. 
+
+```{r}
+ggplot(compare_swap, aes(exp(predictions), colour = data)) +
+  stat_ecdf()+
+  scale_x_continuous(labels=scales::dollar)+
+  annotate(geom = "text", x=60000, y=.2, label="a")+
+  annotate(geom = "text", x=100000, y=.85, label="b")+
+  labs(x="Predicted Employment Income",
+       title="Second order stochastic dominance",
+       subtitle="Given the area between the curves a is larger than area b, swapped SOSD original")
+  
+```
+
+
+
+
+
+
 
 ## Does skill mis-match influence whether someone works full time full year?
 
@@ -328,9 +455,11 @@ From the confusion matrix we can see the model predicts full time full year empl
 null_confusion
 ```
 
-The NULL model predicts full time full year employment with `r scales::percent(null_prediction_accuracy, accuracy=2)` accuracy. Again, we can use the `r null_test_logit$method` to assess the probability that we would get a result this extreme if the null hypothesis is true `r paste0("p = ",null_test_logit$p.value)`.
+The NULL model predicts full time full year employment with `r scales::percent(null_prediction_accuracy, accuracy=2)` accuracy. Again, we can use the `r null_test_logit$method` to assess the probability that we would get a result this extreme if the null hypothesis is true `r paste0("p = ",round(null_test_logit$p.value,3))`.
 
 ## Appendix:
+
+For those of you who like regression tables...
 
 ```{r, results='asis'}
 stargazer::stargazer(mod1, mod2, type = "html",
