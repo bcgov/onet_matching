@@ -46,6 +46,7 @@ my_dt <- function(tbbl) {
 #simulation results----------------------
 simulation_results <- read_rds(here("out","simulation results.rds"))
 compare_swap <- read_rds(here("out","compare_swap.rds"))
+noc_change <- read_rds(here("out","noc_change.rds"))
 #for the heatmap------------------
 distance2 <- read_csv(here("out","distance2.csv"))
 dist_mat <- distance2|>
@@ -281,66 +282,66 @@ Here we address the question of whether we could improve matching by reallocatin
 [The simulation code &darr;]{style="float:right"}
 
 ```{r, eval=FALSE}
+set.seed(123)
 num_sim <- 100000 #social planner gives up after this many tries
+cutoff <- .5 #only swap occupations if distance less than half original
 results <- tibble(sim = 1:num_sim, #initialize a dataframe to store simulation results
-                  nocs = vector(length = num_sim, mode = "list"), 
+                  nocs = vector(length = num_sim, mode = "list"),
                   mean_distance = NA_real_)
 
 for(i in 1:nrow(results)){
   if(i==1){#in the first iteration
     original <- test_stripped|> # test stripped contains only id, NOC and CIP
-      left_join(cip_noc_diff, 
+      left_join(cip_noc_diff,
                 by = c("NOC21"= "census_noc_code", "CIP2021"="census_cip_code"))|> #adds in the distances
       mutate(prob=distance/sum(distance))#used below for drawing two observations to swap occupations
-    original_distance <- mean(original$distance) #baseline for comparison
-    changepoints <- sample(original$id, 
-                           size=2, 
-                           replace = FALSE, 
+    changepoints <- sample(original$id,
+                           size=2,
+                           replace = FALSE,
                            prob = original$prob) #the two observations we are going to swap NOCs
     new <- original|> #take the original allocation then
-      mutate(NOC21= replace(NOC21, 
-                            changepoints, 
+      mutate(NOC21= replace(NOC21,
+                            changepoints,
                             NOC21[rev(changepoints)]))|>#swap the NOCs of the two observations
       select(-distance)|> #git rid of the old distance measure (it is wrong post-swap)
-      left_join(cip_noc_diff, 
-                by = c("NOC21"= "census_noc_code", 
+      left_join(cip_noc_diff,
+                by = c("NOC21"= "census_noc_code",
                        "CIP2021"="census_cip_code"))#adds the correct distances (given the swap)
-    new_distance <- mean(new$distance)#calculate the new mean distance
-    if(new_distance<original_distance){#if the swap reduced the mean distance
+      proportion_improvement <- (sum(original$distance)-sum(new$distance))/mean(original$distance)
+    if(proportion_improvement>cutoff){#if significant reduction in distance
       results$nocs[[i]] <- new$NOC21#new NOCs (starting point in the next iteration)
-      results$mean_distance[[i]] <- new_distance#save the new distance
+      results$mean_distance[[i]] <- mean(new$distance)#save the new distance
     }else{#if our swapping two NOCs did not reduce the mean distance
       results$nocs[[i]] <- original$NOC21 #keep original NOCs (better than the swap)
-      results$mean_distance[[i]] <- original_distance #keep original distance (better than the swap)
+      results$mean_distance[[i]] <- mean(original$distance) #keep original distance (better than the swap)
     }
   }else{#for all subsequent iterations
-    original <- test_stripped|> 
+    original <- test_stripped|>
       select(-NOC21)|> #get rid of the original allocation of NOCs
       bind_cols(NOC21=results$nocs[[i-1]])|> #add in the NOCs from the previous iteration
-      left_join(cip_noc_diff, 
-                by = c("NOC21"= "census_noc_code", 
+      left_join(cip_noc_diff,
+                by = c("NOC21"= "census_noc_code",
                        "CIP2021"="census_cip_code"))|>#add distances (using last iterations NOCs)
       mutate(prob=distance/sum(distance)) #used below for drawing two observations to swap occupations
-    original_distance <- mean(original$distance) #baseline for comparison
-    changepoints <- sample(original$id, 
-                           size=2, 
-                           replace = FALSE, 
+    changepoints <- sample(original$id,
+                           size=2,
+                           replace = FALSE,
                            prob = original$prob) #two observations where we will swap NOCs
-    new <- original|> #take  the original (for this iteration) data, then 
-      mutate(NOC21= replace(NOC21, 
-                            changepoints, 
+    new <- original|> #take  the original (for this iteration) data, then
+      mutate(NOC21= replace(NOC21,
+                            changepoints,
                             NOC21[rev(changepoints)]))|> #swap the NOCs for two of the observations
       select(-distance)|> #distance is now wrong given the swap
-      left_join(cip_noc_diff, 
-                by = c("NOC21"= "census_noc_code", 
+      left_join(cip_noc_diff,
+                by = c("NOC21"= "census_noc_code",
                        "CIP2021"="census_cip_code"))#add in the correct distances
-    new_distance <- mean(new$distance)#calculate the mean distance (given the swap)
-    if(new_distance<original_distance){#if the swap reduced the mean distance
+    proportion_improvement <- (sum(original$distance)-sum(new$distance))/mean(original$distance)
+    if(proportion_improvement>cutoff){#if significant reduction in distance
       results$nocs[[i]] <- new$NOC21 #save the swapped NOCs for use in next iteration
-      results$mean_distance[[i]] <- new_distance #save the new average distance
-    }else{#if the swap did not reduce the mean distance 
+      results$mean_distance[[i]] <- mean(new$distance) #save the new average distance
+    }else{#if the swap did not reduce the mean distance
       results$nocs[[i]] <- original$NOC21 #save the unchanged NOCs for use in next iteration
-      results$mean_distance[[i]] <- original_distance #save the original distance
+      results$mean_distance[[i]] <- mean(original$distance) #save the original distance
     }
   }
   print(paste(scales::percent(i/num_sim, accuracy = 1), "complete")) #how much longer do I have to wait?
@@ -357,7 +358,13 @@ ggplot(simulation_results, aes(sim, mean_distance))+
        )
 ```
 
-Next we can look at how the NOC swapping influences predicted wages in the test set, utilizing the model fit on the training set. First off, summary statistics:
+What proportion of people had their occupations swapped?
+
+```{r, comment=NA}
+table(noc_change$unchanged)/nrow(noc_change)
+```
+
+So obviously this is a ridiculously unrealistic intervention: there would be mass upheaval if `r scales::percent(as.vector(table(noc_change$unchanged)/nrow(noc_change))[1], accuracy=1)` of the labour market changed occupations.  But still, what would be the impact on employment income if the government matched workers with jobs to minimize the average distance?  To do so we take the model that was fit on the training data, and make two predictions: one based actual occupations (and distances), and one based on the intervention.  First off, summary statistics:
 
 ```{r}
 compare_swap|>
@@ -384,7 +391,7 @@ Looks like it is possible that the swapped distribution of predicted employment 
 ggplot(compare_swap, aes(exp(predictions), colour = data)) +
   stat_ecdf()+
   scale_x_continuous(labels=scales::dollar)+
-  annotate(geom = "text", x=60000, y=.2, label="a")+
+  annotate(geom = "text", x=60000, y=.22, label="a")+
   annotate(geom = "text", x=100000, y=.85, label="b")+
   labs(x="Predicted Employment Income",
        title="Second order stochastic dominance",
@@ -445,13 +452,13 @@ ggplot(mod2_coef, aes(estimate,
 
 We use the logit model to form predictions based on the test data. These predictions are converted to probabilities of being employed full time full year, and then rounded to either zero or one. We then can look at the out of sample prediction accuracy of the model via a confusion matrix:
 
-```{r comment=NA}
+```{r, comment=NA}
 confusion
 ```
 
 From the confusion matrix we can see the model predicts full time full year employment with `r scales::percent(prediction_accuracy, accuracy=2)` accuracy. We can test the correspondence between the observed and predicted using the  `r test_logit$method`. i.e. What is the probability that we would get a correlation this strong between prediction and actual if the null hypothesis (no relationship) is true $$`r paste0("p = ",format(test_logit$p.value, scientific=FALSE))`$$ Lets compare this result to the null model, where we randomly assign either a zero or a one to each observation in the test set using the probabilities from the training set. 
 
-```{r comment=NA}
+```{r, comment=NA}
 null_confusion
 ```
 

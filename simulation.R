@@ -1,6 +1,5 @@
 library(tidyverse)
 library(here)
-set.seed(123)
 
 no_distance <- read_rds(here("out","no_distance.rds"))|>
   mutate(NOC21=as.integer(NOC21),
@@ -32,7 +31,12 @@ test <- train_and_test|>
 test_stripped <- test|>
   select(id, NOC21, CIP2021)
 
+
+#SIMULATION--------------------------------
+
+set.seed(123)
 num_sim <- 100000 #social planner gives up after this many tries
+cutoff <- .5 #only swap occupations if distance less than half original
 results <- tibble(sim = 1:num_sim, #initialize a dataframe to store simulation results
                   nocs = vector(length = num_sim, mode = "list"),
                   mean_distance = NA_real_)
@@ -43,7 +47,6 @@ for(i in 1:nrow(results)){
       left_join(cip_noc_diff,
                 by = c("NOC21"= "census_noc_code", "CIP2021"="census_cip_code"))|> #adds in the distances
       mutate(prob=distance/sum(distance))#used below for drawing two observations to swap occupations
-    original_distance <- mean(original$distance) #baseline for comparison
     changepoints <- sample(original$id,
                            size=2,
                            replace = FALSE,
@@ -56,13 +59,13 @@ for(i in 1:nrow(results)){
       left_join(cip_noc_diff,
                 by = c("NOC21"= "census_noc_code",
                        "CIP2021"="census_cip_code"))#adds the correct distances (given the swap)
-    new_distance <- mean(new$distance)#calculate the new mean distance
-    if(new_distance<original_distance){#if the swap reduced the mean distance
+      proportion_improvement <- (sum(original$distance)-sum(new$distance))/mean(original$distance)
+    if(proportion_improvement>cutoff){#if significant reduction in distance
       results$nocs[[i]] <- new$NOC21#new NOCs (starting point in the next iteration)
-      results$mean_distance[[i]] <- new_distance#save the new distance
+      results$mean_distance[[i]] <- mean(new$distance)#save the new distance
     }else{#if our swapping two NOCs did not reduce the mean distance
       results$nocs[[i]] <- original$NOC21 #keep original NOCs (better than the swap)
-      results$mean_distance[[i]] <- original_distance #keep original distance (better than the swap)
+      results$mean_distance[[i]] <- mean(original$distance) #keep original distance (better than the swap)
     }
   }else{#for all subsequent iterations
     original <- test_stripped|>
@@ -72,7 +75,6 @@ for(i in 1:nrow(results)){
                 by = c("NOC21"= "census_noc_code",
                        "CIP2021"="census_cip_code"))|>#add distances (using last iterations NOCs)
       mutate(prob=distance/sum(distance)) #used below for drawing two observations to swap occupations
-    original_distance <- mean(original$distance) #baseline for comparison
     changepoints <- sample(original$id,
                            size=2,
                            replace = FALSE,
@@ -85,13 +87,13 @@ for(i in 1:nrow(results)){
       left_join(cip_noc_diff,
                 by = c("NOC21"= "census_noc_code",
                        "CIP2021"="census_cip_code"))#add in the correct distances
-    new_distance <- mean(new$distance)#calculate the mean distance (given the swap)
-    if(new_distance<original_distance){#if the swap reduced the mean distance
+    proportion_improvement <- (sum(original$distance)-sum(new$distance))/mean(original$distance)
+    if(proportion_improvement>cutoff){#if significant reduction in distance
       results$nocs[[i]] <- new$NOC21 #save the swapped NOCs for use in next iteration
-      results$mean_distance[[i]] <- new_distance #save the new average distance
+      results$mean_distance[[i]] <- mean(new$distance) #save the new average distance
     }else{#if the swap did not reduce the mean distance
       results$nocs[[i]] <- original$NOC21 #save the unchanged NOCs for use in next iteration
-      results$mean_distance[[i]] <- original_distance #save the original distance
+      results$mean_distance[[i]] <- mean(original$distance) #save the original distance
     }
   }
   print(paste(scales::percent(i/num_sim, accuracy = 1), "complete")) #how much longer do I have to wait?
@@ -115,10 +117,35 @@ mod1 <- lm(log_income ~ . , data = train)
 predict_original <- tibble(data="original", predictions=predict(mod1, newdata = test_original))
 predict_swapped <- tibble(data="swapped", predictions=predict(mod1, newdata = test_swapped))
 
+noc_change <- bind_cols(original=test_original$census_noc_description, swapped=test_swapped$census_noc_description)|>
+  mutate(unchanged=if_else(original==swapped, "same", "changed"))
+
 compare_swap <- bind_rows(predict_original, predict_swapped)
 
 write_rds(compare_swap, here("out", "compare_swap.rds"))
 write_rds(results, here("out","simulation results.rds"))
+write_rds(noc_change, here("out","noc_change.rds"))
+
+#take a look------------------------
+
+table(noc_change$unchanged)/nrow(noc_change)
+
+compare_swap|>
+  group_by(data)|>
+  summarise(mean_income=scales::dollar(mean(exp(predictions))),
+            sd_income=scales::dollar(sd(exp(predictions))))
+
+
+ggplot(results, aes(sim, mean_distance))+
+  geom_line()+
+  scale_x_continuous(labels=scales::comma)+
+  labs(x="Simulation Number",
+       y="Average skill gap distance",
+       title="Shuffling occupations can reduce the average skill gap."
+  )
+
+
+
 
 
 
