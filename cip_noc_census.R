@@ -7,8 +7,11 @@ library(tidyverse)
 library(readxl)
 library(here)
 library(janitor)
-library(tidytext) # reorder_within
+library(tidytext) # for reorder_within
+library(conflicted)
+conflicts_prefer(dplyr::filter)
 #functions------------------
+cut_off <- .02
 read_data <- function(file_name){
   #' Input: a file name.
   #' Output: a wide format dataframe.
@@ -23,8 +26,8 @@ add_weights <- function(tbbl){
   #' Output: the input tibble with columns weight and weight1 added.
   tbbl|>
     mutate(weight=count/sum(count), #using all the counts as weights
-           weight1=if_else(weight>=.01, weight, 0), #replacing all weights less than .01 with 0
-           weight1=weight1/sum(weight1), .after="count" #weights, conditional on being greater than .01 (conditional weights sum to 1)
+           weight1=if_else(weight>=cut_off, weight, 0), #replacing all weights less than cut_off with 0
+           weight1=weight1/sum(weight1), .after="count" #weights, conditional on being greater than cut_off (conditional weights sum to 1)
     )|>
     arrange(desc(weight1))
 }

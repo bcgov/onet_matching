@@ -1,11 +1,14 @@
 ---
-title: "The impact of Skill mis-match labour market outcomes"
+title: "The impact of Skill mis-match on labour market outcomes"
 subtitle: "Source code: [![github logo](github.png){width=100px}](https://github.com/bcgov/onet_matching){target='_blank'}"
 author: "Richard Martin"
 date: "`r Sys.Date()`"
 output:
   html_document:
     code_folding: hide
+    toc: true
+    toc_depth: 2
+    
 ---
 
 ```{r setup, include=FALSE}
@@ -19,6 +22,8 @@ library(lmtest)
 library(sandwich)
 library(tidytext)
 library(broom)
+library(ggalluvial)
+library(margins)
 my_dt <- function(tbbl) {
   DT::datatable(tbbl,
     extensions = "Buttons",
@@ -42,7 +47,7 @@ my_dt <- function(tbbl) {
 }
 ```
 
-```{r}
+```{r, cache=TRUE}
 #simulation results----------------------
 simulation_results <- read_rds(here("out","simulation results.rds"))
 compare_swap <- read_rds(here("out","compare_swap.rds"))
@@ -112,6 +117,9 @@ mod1 <- lm(log_income ~ . , data = train)
 #the logit model-------------------------------
 mod2 <- glm(full_time_full_year ~ . , family=binomial(link='logit'), data=train2)
 
+margins_mod2 <- margins(mod2)|> #cant interpret logit (log odds ratio): margins translates to probabilities
+  summary()|>
+  separate(factor, into=c("variable", "level"), sep=":")
 
 #assess accuracy-----------------
 rmse_in_sample <- sqrt(mean(mod1$residuals^2))
@@ -123,7 +131,7 @@ rmse_out_of_sample <- test_w_pred|>
   pull()|>
   sqrt()
 
-rmse_in_sample2 <- sqrt(mean(mod2$residuals^2))
+#rmse_in_sample2 <- sqrt(mean(mod2$residuals^2))
 
 test_w_pred2 <- test2|>
   mutate(prediction= predict(mod2, newdata = test2),
@@ -185,23 +193,30 @@ mod2_coef <- broom::tidy(mod2rse, conf.int = TRUE)|>
 distance_effect <- mod1_coef$estimate[mod1_coef$variable=="distance"]
 dist_quant <- quantile(filtered$distance, probs = c(.1,.9), na.rm = TRUE)
 economic_effect <- (dist_quant[2]-dist_quant[1])*distance_effect
-distance_effect2 <- mod2_coef$estimate[mod2_coef$variable=="distance"]
+
+distance_effect2 <- margins_mod2$AME[margins_mod2$variable=="distance"]
 dist_quant2 <- quantile(filtered2$distance, probs = c(.1,.9), na.rm = TRUE)
 economic_effect2 <- (dist_quant2[2]-dist_quant2[1])*distance_effect2
-
 ```
 
-## Introduction:
+## TL;DR
 
+People vary in how well matched their skills are to the skill required by their occupation. There are various reasons why people might be mis-matched.  For instance, if there is an element of "winner takes all" in the labour market, one would expect that the highest quality workers and highest quality employers would end up with the highest quality matches: both the buyer and the seller have the luxury of being selective in who they match with.  But being poorly matched does not *necessarily* indicate a worker is of low ability.  
 
-The goal of this exercise is to investigate the impact of skill mismatch on 
+* People might *choose* to be poorly matched if they discover they do not enjoy the work in the field they trained for.
+* Poor match quality might be due to discrimination based on age, gender or ethnicity.  
 
-1) employment income of those who work full time full year and
-2) the odds of working full time full year.
+Regardless of the cause of poor match quality, we will want to control for these confounding variables.  If we successfully control for *all* the factors that influence match quality, we can assume that match quality is "as good as" randomly assigned. The goal of this exercise is to investigate the impact of skill mis-match on 
 
-We define skill mismatch to be the euclidean distance between the skill profile of an occupation and the skills possessed by a worker.  The skill profile of an occupation is relatively straight forward to derive from the ONET skills and work activities.  In contrast there is no source of information regarding the skills of a worker.  Here we make the presumption that a worker's skills are acquired during education, and we can infer the skills acquired during education by looking at the relationship between occupations and field of study.
+1) **employment income of those who work full time full year:** Going from the 10th percentile of skill mis-match (relatively well matched) to the 90th percentile of skill mis-match (relatively poorly matched) causes a `r scales::percent(economic_effect, accuracy=.1)` reduction in employment income for those working full time, full year.
 
-Statistics Canada Table: 98-10-0403-01 contains counts of workers by occupation and field of study. Suppose that we wanted to infer the average skill profile of someone whose field of study was `Health and related fields`. In the table below we show the top occupations (by count of workers) for the field of study `Health and related fields`.  From this we derive a  proportion, a truncated proportion (only proportions greater than .01), and an adjusted proportion to ensure the proportions we utilize sum to one.  We then multiply the skill profile of each of the occupations by the adjusted proportion and then sum to create a weighted average skill profile for each field of study. 
+2) **the probability of working full time full year:** Going from the 10th percentile of skill mis-match (relatively well matched) to the 90th percentile of skill mis-match  (relatively poorly matched) causes a `r scales::percent(economic_effect2, accuracy=.1)` reduction in the probability of being employed full time full year. 
+
+## Introduction
+
+We define skill mis-match to be the euclidean distance between the skill profile of an occupation and the skills possessed by a worker.  The skill profile of an occupation is relatively straight forward to derive from the ONET skills and work activities.  In contrast there is no direct source of information regarding the skills of a worker. Here we make the presumption that a worker's skills are acquired during education, and we can infer the skills acquired during education by looking at the relationship between occupations and field of study.
+
+Statistics Canada Table: 98-10-0403-01 contains counts of workers by occupation and field of study. Suppose that we wanted to infer the average skill profile of someone whose field of study was `Health and related fields`. In the table below we show the top occupations (by count of workers) for the field of study `Health and related fields`.  From this we derive a proportion, a truncated proportion (only proportions greater than .01), and an adjusted proportion to ensure the proportions we utilize sum to one.  We then multiply the skill profile of each of the occupations by the adjusted proportion and then sum to create a weighted average skill profile for each field of study.  At the extreme, if every person from a given field of study ended up in the same occupation, both skill profiles would be identical. 
 
 ```{r}
 my_dt(cip2_noc5)
@@ -226,9 +241,29 @@ my_dt(filtering_info)
 
 Note that the proportion of Canadians working full year full time is likely lower than normal, given COVID. This filtering leaves us with `r nrow(filtered)` observations, 90% of which are randomly allocated to a training set, with the remaining 10% going to a testing set. 
 
+## Where do fields of study lead?
+
+Using our filtered dataset, we can look at what fields of study are associated with what occupations. Note that it is the dispersion of occupations associated with a given field of study that leads to our measure of skill mis-match. e.g. if there was a field of study where every single person ends up in the same occupation, their skill mis-match (distance) would be zero.  In contrast, the larger the set of destination occupations, the more likely it is that the skills developed during education do not match exactly the skills required in one of the resulting occupations. 
+
+```{r, fig.retina=2, fig.width=18, fig.height=18}
+filtered|>
+  group_by(`NOC vs. Admin and financ...:`, `CIP vs. Agriculture...:`)|>
+  count()|>
+  ggplot(aes(axis1= `CIP vs. Agriculture...:`, axis2 = `NOC vs. Admin and financ...:`, y = n)) +
+  geom_alluvium(aes(fill = `CIP vs. Agriculture...:`)) +
+  geom_stratum() +
+  ggfittext::geom_fit_text(stat = "stratum", aes(label = after_stat(stratum)), width = 1/3, min.size = 1) +
+  labs(fill="Fields of Study")+
+  theme_void()+
+  theme(legend.position = "bottom")
+```
+
+
+
+
 ## The model:
 
-So what we are after is the causal impact of a mismatch in skills (proxied by distance) on employment income.  Given that we are using observational data, we must lean on the Conditional Independence Assumption: i.e. we must assume that distance is "as good as randomly assigned" when we condition on the *all* the variables that influence both distance and employment income.  We fit the model 
+So what we are after is the causal impact of a mis-match in skills (proxied by distance) on employment income.  Given that we are using observational data, we must lean on the Conditional Independence Assumption: i.e. we must assume that distance is "as good as randomly assigned" when we condition on the *all* the variables that influence both distance and employment income.  We fit the model 
 
 $$\log(Employment~Income)=Age+Highest~Degree+ Language+ Gender+ Ethnicity+Occupation+Field~of~Study+distance+\mu$$
 The plot below shows (most of the) regression results: Language and Gender estimates can be found in the regression table in the appendix.  From the results you can see that:
@@ -239,7 +274,7 @@ The plot below shows (most of the) regression results: Language and Gender estim
 4) Employment income tends to be lower for non-whites.
 5) Employment income highest for health occupations, lowest in sales.
 
-But the main result we are after is the monetary penalty associated with a skill mismatch: $\beta_{distance}~=~$`r round(mod1_coef$estimate[mod1_coef$variable=="distance"],3)`, which can be interpreted as "A one unit increase in distance causes a $100*(\exp(\beta_{distance})-1)~=~$`r scales::percent(distance_effect, accuracy=.1)` change in employment income."  In terms of its economic relevance, going from the 10th percentile of distance `r dist_quant[1]` (relatively well matched) to the 90th percentile of distance `r dist_quant[2]` (relatively poorly matched) causes a `r scales::percent(economic_effect, accuracy=.1)` change in employment income, *ceteris paribus*. 
+But the main result we are after is the monetary penalty associated with a skill mis-match: $\beta_{distance}~=~$`r round(mod1_coef$estimate[mod1_coef$variable=="distance"],3)`, which can be interpreted as "A one unit increase in distance causes a $100*(\exp(\beta_{distance})-1)~=~$`r scales::percent(distance_effect, accuracy=.1)` change in employment income."  In terms of its economic relevance, going from the 10th percentile of distance `r dist_quant[1]` (relatively well matched) to the 90th percentile of distance `r dist_quant[2]` (relatively poorly matched) causes a `r scales::percent(economic_effect, accuracy=.1)` change in employment income, *ceteris paribus*. 
 
 ## Plot of regression results:
 
@@ -277,14 +312,14 @@ ggplot(test_w_pred, aes(exp(prediction), exp(log_income)))+
 
 ## What if a social planner could reallocate workers between occupations?
 
-Here we address the question of whether we could improve matching by reallocating workers between occupations, with the goal of reducing skill mis-match: i.e. minimizing the average distance by iteratively swapping 2 workers between occupations.  We then compare the predicted employment income based on observed occupations (factual) with the predicted employment income based on the swapped occupations (counter factual).  
+Above we identified how much employment income would be expected to increase for an *individual* who went from being relatively well matched (10th percentile of distance) to relatively poorly matched (90th percentile of distance): a `r scales::percent(economic_effect, accuracy=.1)` change in employment income, *ceteris paribus*.  However this does not give an indication of the social welfare benefits of reducing mis-match, as it is possible that increasing the match quality of a given individual may worsen the match quality of whoever they displaced when they shifted occupations.  Next we perform a hypothetical exercise, where a social planner attempts to improve the average match quality by iteratively selecting two people at random, swapping their occupations, and comparing the original mis-match (distance) with the swapped mis-match (distance).  If the swapped distance is significantly lower than the original distance the workers swap occupations, otherwise they remain unchanged... and then we repeat 100000 times.  We then compare the predicted employment income based on observed occupations (factual) with the predicted employment income based on the swapped occupations (counter factual).  
 
 [The simulation code &darr;]{style="float:right"}
 
 ```{r, eval=FALSE}
 set.seed(123)
 num_sim <- 100000 #social planner gives up after this many tries
-cutoff <- .5 #only swap occupations if distance less than half original
+cutoff <- .5 #only swap occupations if proportional improvement is greater than this
 results <- tibble(sim = 1:num_sim, #initialize a dataframe to store simulation results
                   nocs = vector(length = num_sim, mode = "list"),
                   mean_distance = NA_real_)
@@ -295,27 +330,7 @@ for(i in 1:nrow(results)){
       left_join(cip_noc_diff,
                 by = c("NOC21"= "census_noc_code", "CIP2021"="census_cip_code"))|> #adds in the distances
       mutate(prob=distance/sum(distance))#used below for drawing two observations to swap occupations
-    changepoints <- sample(original$id,
-                           size=2,
-                           replace = FALSE,
-                           prob = original$prob) #the two observations we are going to swap NOCs
-    new <- original|> #take the original allocation then
-      mutate(NOC21= replace(NOC21,
-                            changepoints,
-                            NOC21[rev(changepoints)]))|>#swap the NOCs of the two observations
-      select(-distance)|> #git rid of the old distance measure (it is wrong post-swap)
-      left_join(cip_noc_diff,
-                by = c("NOC21"= "census_noc_code",
-                       "CIP2021"="census_cip_code"))#adds the correct distances (given the swap)
-      proportion_improvement <- (sum(original$distance)-sum(new$distance))/mean(original$distance)
-    if(proportion_improvement>cutoff){#if significant reduction in distance
-      results$nocs[[i]] <- new$NOC21#new NOCs (starting point in the next iteration)
-      results$mean_distance[[i]] <- mean(new$distance)#save the new distance
-    }else{#if our swapping two NOCs did not reduce the mean distance
-      results$nocs[[i]] <- original$NOC21 #keep original NOCs (better than the swap)
-      results$mean_distance[[i]] <- mean(original$distance) #keep original distance (better than the swap)
-    }
-  }else{#for all subsequent iterations
+  }else{
     original <- test_stripped|>
       select(-NOC21)|> #get rid of the original allocation of NOCs
       bind_cols(NOC21=results$nocs[[i-1]])|> #add in the NOCs from the previous iteration
@@ -323,6 +338,7 @@ for(i in 1:nrow(results)){
                 by = c("NOC21"= "census_noc_code",
                        "CIP2021"="census_cip_code"))|>#add distances (using last iterations NOCs)
       mutate(prob=distance/sum(distance)) #used below for drawing two observations to swap occupations
+  }
     changepoints <- sample(original$id,
                            size=2,
                            replace = FALSE,
@@ -343,7 +359,6 @@ for(i in 1:nrow(results)){
       results$nocs[[i]] <- original$NOC21 #save the unchanged NOCs for use in next iteration
       results$mean_distance[[i]] <- mean(original$distance) #save the original distance
     }
-  }
   print(paste(scales::percent(i/num_sim, accuracy = 1), "complete")) #how much longer do I have to wait?
 }
 ```
@@ -364,7 +379,7 @@ What proportion of people had their occupations swapped?
 table(noc_change$unchanged)/nrow(noc_change)
 ```
 
-So obviously this is a ridiculously unrealistic intervention: there would be mass upheaval if `r scales::percent(as.vector(table(noc_change$unchanged)/nrow(noc_change))[1], accuracy=1)` of the labour market changed occupations.  But still, what would be the impact on employment income if the government matched workers with jobs to minimize the average distance?  To do so we take the model that was fit on the training data, and make two predictions: one based actual occupations (and distances), and one based on the intervention.  First off, summary statistics:
+So obviously this is a ridiculously unrealistic intervention: if `r scales::percent(as.vector(table(noc_change$unchanged)/nrow(noc_change))[1], accuracy=1)` of the labour market changed occupations it would be hugely disruptive. The point of the simulation is to figure out what the upper bound is on an intervention attempting to improve skill matching in the labour market: in the best case scenerio where there are no adjustment costs and it is cool to displace more than a third of the labour market, what improvement in the distribution of employment income can be attained? To answer this question we take the model that was fit on the training data, and make two predictions: one based actual occupations (and distances), and one based on the intervention (swapped occupations and distances).  First off, summary statistics:
 
 ```{r}
 compare_swap|>
@@ -374,7 +389,7 @@ compare_swap|>
   DT::datatable(rownames = FALSE)
 ```
 
-From the summary statistics we can infer that any risk neutral individual behind the veil of ignorance would prefer the distribution of employment income based on the swapped occupations: the mean is higher.  How about for risk averse individuals?  Next, lets take a look at density plots:
+From the summary statistics we can infer that any risk neutral individual behind the veil of ignorance would prefer the distribution of employment income based on the swapped occupations: the mean is (slightly) higher.  How about for risk averse individuals?  Next, lets take a look at density plots:
 
 ```{r}
 ggplot(compare_swap, aes(exp(predictions), fill=data))+
@@ -399,11 +414,9 @@ ggplot(compare_swap, aes(exp(predictions), colour = data)) +
   
 ```
 
+## The takeaway:
 
-
-
-
-
+By costlessly displacing over a third of the labour market the social planner was able to marginally improve social outcomes, in the sense that *any* risk neutral or risk averse individual behind the veil of ignorance would prefer the government to intervene.  In reality, switching occupations is not without cost, so a more realistic intervention would likely focus on those *entering* the labour market. Thus the above exercise puts an upper bound on what we can hope to achieve by improving labour market skill matching.
 
 ## Does skill mis-match influence whether someone works full time full year?
 
@@ -417,10 +430,10 @@ my_dt(filtering_info2)
 
 ## The model:
 
-So what we are after is the causal impact of a mismatch in skills (proxied by distance) on the odds of being employed full year full time.  Given that we are using observational data, we must lean on the Conditional Independence Assumption: i.e. we must assume that distance is "as good as randomly assigned" when we condition on the *all* the variables that influence both distance and whether employed full time full year.  We fit the model 
+So what we are after is the causal impact of a mis-match in skills (proxied by distance) on the probability of being employed full year full time.  Given that we are using observational data, we must lean on the Conditional Independence Assumption: i.e. we must assume that distance is "as good as randomly assigned" when we condition on the *all* the variables that influence both distance and whether employed full time full year.  We fit the model 
 
 $$logit(Employed~FT~FY)=Age+Highest~Degree+ Language+ Gender+ Ethnicity+Occupation+Field~of~Study+distance+\mu$$
-The plot below shows (most of the) regression results: Language and Gender estimates can be found in regression table which follows.  From the results you can see that the odds of working full year full time are:
+The plot below shows (most of the) regression results: Language and Gender estimates can be found in regression table which follows.  From the results you can see that the probability of working full year full time is:
 
 1) significantly higher for every age group when compared to 20-24 year olds.
 2) significantly higher for techy fields of study, and significantly lower for arts and humanities.
@@ -428,15 +441,25 @@ The plot below shows (most of the) regression results: Language and Gender estim
 4) significantly higher for Filipino, and significantly lower for West Asian, Japanese and Korean.  
 5) significantly higher for professional occupations, and significantly lower for a broad range of occupations.  
 
-But the main result we are after is how distance affects the odds of being employed full time full year:  The odds of working full year full time decrease by `r scales::percent(distance_effect2, accuracy = .1)` for every one unit increase in distance.  In terms of its economic relevance, going from the 10th percentile of distance `r dist_quant2[1]` (relatively well matched) to the 90th percentile of distance `r dist_quant2[2]` (relatively poorly matched) causes a `r scales::percent(economic_effect2, accuracy=.1)` reduction in the odds of being fully employed, *ceteris paribus*.  
+But the main result we are after is how distance affects the probability of being employed full time full year:  The probability of working full year full time decrease by `r scales::percent(distance_effect2, accuracy = .1)` for every one unit increase in distance.  In terms of its economic relevance, going from the 10th percentile of distance `r dist_quant2[1]` (relatively well matched) to the 90th percentile of distance `r dist_quant2[2]` (relatively poorly matched) causes a `r scales::percent(economic_effect2, accuracy=.1)` reduction in the probability of being fully employed, *ceteris paribus*.  
 
 ## Plot of regression results:
 
 ```{r, fig.retina=2, fig.width=12, fig.height=9}
-ggplot(mod2_coef, aes(estimate,
-                     reorder_within(level, within=variable, by=estimate),
-                     xmin=conf.low,
-                     xmax=conf.high))+
+margins_mod2|>
+  mutate(variable=str_remove_all(variable, "`"),
+         level= if_else(is.na(level), variable, level),
+         level=str_trunc(level, 50)
+         )|>
+  filter(!variable %in% c("(Intercept)",
+                          "Language vs. not english",
+                          "Gender vs. Woman+"
+                          ))|>
+  arrange(variable, level)|>
+  ggplot(aes(AME,
+            reorder_within(level, within=variable, by=AME),
+                     xmin=lower,
+                     xmax=upper))+
   geom_vline(xintercept = 0, col="grey", lty=2)+
   geom_point(size=.5)+
   geom_errorbarh(height=0)+
@@ -446,6 +469,20 @@ ggplot(mod2_coef, aes(estimate,
   labs(x=NULL,
        y=NULL)+
   theme_minimal()
+
+# ggplot(mod2_coef, aes(estimate,
+#                      reorder_within(level, within=variable, by=estimate),
+#                      xmin=conf.low,
+#                      xmax=conf.high))+
+#   geom_vline(xintercept = 0, col="grey", lty=2)+
+#   geom_point(size=.5)+
+#   geom_errorbarh(height=0)+
+#   facet_wrap(~variable, scales = "free")+
+#   scale_y_reordered()+
+#   scale_x_continuous(labels=scales::percent)+
+#   labs(x=NULL,
+#        y=NULL)+
+#   theme_minimal()
 ```
 
 ## Assessing the Logit Model:
@@ -466,7 +503,7 @@ The NULL model predicts full time full year employment with `r scales::percent(n
 
 ## Appendix:
 
-For those of you who like regression tables...
+For those of you who like regression tables...  Note that logit results give odds ratio effects (not probabilities)
 
 ```{r, results='asis'}
 stargazer::stargazer(mod1, mod2, type = "html",

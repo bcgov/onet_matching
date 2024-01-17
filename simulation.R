@@ -36,7 +36,7 @@ test_stripped <- test|>
 
 set.seed(123)
 num_sim <- 100000 #social planner gives up after this many tries
-cutoff <- .5 #only swap occupations if distance less than half original
+cutoff <- .5 #only swap occupations if proportional improvement is greater than this
 results <- tibble(sim = 1:num_sim, #initialize a dataframe to store simulation results
                   nocs = vector(length = num_sim, mode = "list"),
                   mean_distance = NA_real_)
@@ -47,27 +47,7 @@ for(i in 1:nrow(results)){
       left_join(cip_noc_diff,
                 by = c("NOC21"= "census_noc_code", "CIP2021"="census_cip_code"))|> #adds in the distances
       mutate(prob=distance/sum(distance))#used below for drawing two observations to swap occupations
-    changepoints <- sample(original$id,
-                           size=2,
-                           replace = FALSE,
-                           prob = original$prob) #the two observations we are going to swap NOCs
-    new <- original|> #take the original allocation then
-      mutate(NOC21= replace(NOC21,
-                            changepoints,
-                            NOC21[rev(changepoints)]))|>#swap the NOCs of the two observations
-      select(-distance)|> #git rid of the old distance measure (it is wrong post-swap)
-      left_join(cip_noc_diff,
-                by = c("NOC21"= "census_noc_code",
-                       "CIP2021"="census_cip_code"))#adds the correct distances (given the swap)
-      proportion_improvement <- (sum(original$distance)-sum(new$distance))/mean(original$distance)
-    if(proportion_improvement>cutoff){#if significant reduction in distance
-      results$nocs[[i]] <- new$NOC21#new NOCs (starting point in the next iteration)
-      results$mean_distance[[i]] <- mean(new$distance)#save the new distance
-    }else{#if our swapping two NOCs did not reduce the mean distance
-      results$nocs[[i]] <- original$NOC21 #keep original NOCs (better than the swap)
-      results$mean_distance[[i]] <- mean(original$distance) #keep original distance (better than the swap)
-    }
-  }else{#for all subsequent iterations
+  }else{
     original <- test_stripped|>
       select(-NOC21)|> #get rid of the original allocation of NOCs
       bind_cols(NOC21=results$nocs[[i-1]])|> #add in the NOCs from the previous iteration
@@ -75,6 +55,7 @@ for(i in 1:nrow(results)){
                 by = c("NOC21"= "census_noc_code",
                        "CIP2021"="census_cip_code"))|>#add distances (using last iterations NOCs)
       mutate(prob=distance/sum(distance)) #used below for drawing two observations to swap occupations
+  }
     changepoints <- sample(original$id,
                            size=2,
                            replace = FALSE,
@@ -95,7 +76,6 @@ for(i in 1:nrow(results)){
       results$nocs[[i]] <- original$NOC21 #save the unchanged NOCs for use in next iteration
       results$mean_distance[[i]] <- mean(original$distance) #save the original distance
     }
-  }
   print(paste(scales::percent(i/num_sim, accuracy = 1), "complete")) #how much longer do I have to wait?
 }
 
