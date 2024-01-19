@@ -56,7 +56,7 @@ for(i in 1:nrow(results)){
                        "CIP2021"="census_cip_code"))|>#add distances (using last iterations NOCs)
       mutate(prob=distance/sum(distance)) #used below for drawing two observations to swap occupations
   }
-    changepoints <- sample(original$id,
+  changepoints <- sample(original$id,
                            size=2,
                            replace = FALSE,
                            prob = original$prob) #two observations where we will swap NOCs
