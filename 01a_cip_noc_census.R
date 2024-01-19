@@ -12,6 +12,7 @@ library(conflicted)
 conflicts_prefer(dplyr::filter)
 #functions------------------
 cut_off <- .01
+topn <- 10
 read_data <- function(file_name){
   #' Input: a file name.
   #' Output: a wide format dataframe.
