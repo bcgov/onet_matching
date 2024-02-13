@@ -1,0 +1,203 @@
+---
+title: "Labour market impact of skill mis-match"
+author: "Richard Martin"
+format: 
+   revealjs:
+      theme: sky
+      width: 1600
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message=FALSE)
+library(tidyverse)
+library(conflicted)
+conflicts_prefer(dplyr::filter)
+library(here)
+library(lmtest)
+library(sandwich)
+library(tidytext)
+library(broom)
+library(ggalluvial)
+library(margins)
+```
+
+```{r, cache=TRUE}
+source("shared_code.R")
+```
+
+## TL; DR
+
+1)  **employment income of those who work full time full year:** Going from relatively well matched to relatively poorly matched causes a `r scales::percent(economic_effect, accuracy=.1)` reduction in employment income for those working full time, full year.
+
+2)  **the probability of working full time full year:** Going from relatively well matched to relatively poorly matched causes a `r scales::percent(economic_effect2, accuracy=.1)` reduction in the probability of being employed full time full year.
+
+## What is skill mis-match?
+
+-   When the skills of a worker do not match the skills of their occupation.
+-   Workers vary in terms of how well matched their skills are to the skill required by their occupation.
+-   There are various reasons why people might be mis-matched... such as?
+-   Given we are using observational (census) data we will want to control for these confounds.
+
+## How do we measure skill mis-match?
+
+-   Skill mis-match is the euclidean distance between the skill profile of an occupation and the skills possessed by a worker.
+-   Occupation skill profiles easy to obtain from ONET skills and work activities.
+-   Skills possessed by workers? We are going to have to get creative.
+
+## Field of study skill profile:
+
+-   We presume that a worker's skill profile is determined by their field of study.
+
+![](Screenshot%20from%202024-02-12%2014-11-02.png)
+
+## Example: Health and related fields
+
+```{r}
+DT::datatable(cip2_noc5, 
+              extensions = 'Scroller',
+              options = list(dom="t", 
+                             deferRender = TRUE,
+                             scrollY = 200,
+                             scroller = TRUE), 
+              rownames = FALSE)%>%
+  DT::formatStyle(columns = colnames(cip2_noc5), fontSize = '50%')
+```
+
+Source: Statistics Canada 98-10-0403-01
+
+## Skill profile of Health and related fields:
+
+-   So in the previous table we derived weights $\omega_n$ associated with the $n$ occupations that account for more than one percent of the workers in a given field of study.
+-   For a given skill $S$ and field of study $FOS$ we calculated the weighted mean of the skill score:
+
+$$S_{FOS}=\sum^{n}_{NOC=1} \omega_n S_{NOC}$$
+
+## Skill mis-match:
+
+```{r, fig.retina=2, fig.width=18, fig.height=7}
+ heatmaply::heatmaply(dist_mat)
+```
+
+## Where do fields of study lead?
+
+```{r, fig.retina=2, fig.width=30, fig.height=10}
+filtered|>
+  group_by(`NOC vs. Admin and financ...:`, `CIP vs. Agriculture...:`)|>
+  count()|>
+  ggplot(aes(axis1= `CIP vs. Agriculture...:`, axis2 = `NOC vs. Admin and financ...:`, y = n)) +
+  geom_alluvium(aes(fill = `CIP vs. Agriculture...:`)) +
+  geom_stratum() +
+  ggfittext::geom_fit_text(stat = "stratum", aes(label = after_stat(stratum)), width = 1/3, min.size = 1) +
+  labs(fill="Fields of Study")+
+  theme_void()+
+  theme(legend.position = "bottom")
+```
+
+## The Income Regression:
+
+```{=tex}
+\begin{multline}
+\log(Employment~Income)=Age+Highest~Degree+ \\ Language+ Gender+ Ethnicity+Occupation \\ +Field~of~Study+distance+\mu
+\end{multline}
+```
+## Plot of regression results:
+
+```{r, fig.retina=2, fig.width=30, fig.height=10}
+ggplot(mod1_coef, aes(estimate,
+                     reorder_within(level, within=variable, by=estimate),
+                     xmin=conf.low,
+                     xmax=conf.high))+
+  geom_vline(xintercept = 0, col="grey", lty=2)+
+  geom_point(size=.5)+
+  geom_errorbarh(height=0)+
+  facet_wrap(~variable, scales = "free")+
+  scale_y_reordered()+
+  scale_x_continuous(labels=scales::percent)+
+  labs(x=NULL,
+       y=NULL)+
+  theme_minimal()+
+  theme(text = element_text(size = 20))
+```
+
+## What if a social planner could reallocate workers between occupations?
+
+-   Above we identified how much employment income would be expected to increase for an *individual* who went from being relatively well matched to relatively poorly matched.
+-   Re social welfare, it is possible that increasing the match quality of a given individual may worsen the match quality of whoever they displaced when they shifted occupations.
+
+## Simulation of improved matching:
+
+```{r, fig.retina=2, fig.width=30, fig.height=10}
+ggplot(simulation_results, aes(sim, mean_distance))+
+  geom_line()+
+  scale_x_continuous(labels=scales::comma)+
+  labs(x="Simulation Number",
+       y="Average skill gap distance",
+       title="Shuffling occupations can reduce the average skill gap."
+       )+
+  theme(text = element_text(size = 20))
+```
+
+## Distributional effect of swapping:
+
+```{r, fig.retina=2, fig.width=30, fig.height=10}
+ggplot(compare_swap, aes(exp(predictions), fill=data))+
+  geom_density(alpha=.25)+
+  scale_x_continuous(labels = scales::dollar)+
+  labs(x="Predicted Employment Income")+
+  theme(text = element_text(size = 20))
+```
+
+## Second order stochastic dominance (SOSD):
+
+```{r, fig.retina=2, fig.width=30, fig.height=10}
+ggplot(compare_swap, aes(exp(predictions), colour = data)) +
+  stat_ecdf()+
+  scale_x_continuous(labels=scales::dollar)+
+  annotate(geom = "text", x=60000, y=.22, label="a", size=10)+
+  annotate(geom = "text", x=100000, y=.85, label="b", size=10)+
+  labs(x="Predicted Employment Income",
+       title="Second order stochastic dominance",
+       subtitle="Given the area between the curves a is larger than area b, swapped SOSD original")+
+  theme(text = element_text(size = 20))
+```
+
+## Skill mis-match and full time full year employment:
+
+```{=tex}
+\begin{multline}
+logit(Employed~FT~FY)=Age+Highest~Degree \\+ Language+ Gender+ Ethnicity+Occupation+\\Field~of~Study+distance+\mu
+\end{multline}
+```
+## Regression results:
+
+```{r, fig.retina=2, fig.width=30, fig.height=10}
+margins_mod2|>
+  mutate(variable=str_remove_all(variable, "`"),
+         level= if_else(is.na(level), variable, level),
+         level=str_trunc(level, 50)
+         )|>
+  filter(!variable %in% c("(Intercept)",
+                          "Language vs. not english",
+                          "Gender vs. Woman+"
+                          ))|>
+  arrange(variable, level)|>
+  ggplot(aes(AME,
+            reorder_within(level, within=variable, by=AME),
+                     xmin=lower,
+                     xmax=upper))+
+  geom_vline(xintercept = 0, col="grey", lty=2)+
+  geom_point(size=.5)+
+  geom_errorbarh(height=0)+
+  facet_wrap(~variable, scales = "free")+
+  scale_y_reordered()+
+  scale_x_continuous(labels=scales::percent)+
+  labs(x=NULL,
+       y=NULL)+
+  theme_minimal()+
+  theme(text = element_text(size = 20))
+
+```
+
+## Full paper here:
+
+<https://rpubs.com/BC_LMIO/1136692>
