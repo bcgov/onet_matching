@@ -1,5 +1,6 @@
 ---
 title: "Labour market impact of skill mis-match"
+subtitle: "[![github logo](github.png){width=100px}](https://github.com/bcgov/onet_matching){target='_blank'}"
 author: "Richard Martin"
 format: 
    revealjs:

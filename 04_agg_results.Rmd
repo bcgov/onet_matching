@@ -22,6 +22,8 @@ library(tidytext)
 library(broom)
 library(ggalluvial)
 library(margins)
+cip_noc_diff <- readxl::read_excel(here("out","cip_noc_differences2.xlsx"),
+                                   col_types = c(rep("text",4), rep("numeric", 77)))
 ```
 
 ```{r, cache=TRUE}
@@ -59,6 +61,39 @@ Once we have the skill profiles associated with each of the fields of study and 
 ```{r, fig.width=10, fig.height=8}
  heatmaply::heatmaply(dist_mat)
 ```
+
+## Assisting occupations:
+
+Why is the NOC group "Assisting Occupations..." poorly matched?  Based on the NOC-CIP differences, they appear to be generically over-skilled. The skills they apparently have (based on their field of study) exceed the skills required in this broad set of occupations. 
+
+```{r, fig.width=10, fig.height=8}
+plt <- cip_noc_diff|>
+  filter(census_noc_code==14)|>
+  select(contains("noc-cip"))|>
+  pivot_longer(cols=everything())|>
+  mutate(name=str_sub(name, start=8),
+         value=-value)|>
+  group_by(name)|>
+  summarize(value=mean(value))|>
+  ggplot(aes(value, 
+             fct_reorder(name,value),
+             text=paste0("Skill: ",
+                         name,
+                         "\n Skill surplus: ",
+                         round(value,2)
+                         )
+             ))+
+  geom_col()+
+  labs(x=NULL, 
+       y=NULL, 
+       title='Skill surplus for Assisting occupations, care providers, student monitors, crossing guards...')+
+  theme_minimal(base_size = 6)
+
+plotly::ggplotly(plt, tooltip = "text")
+
+```
+
+
 
 ## Filtering the census data:
 
